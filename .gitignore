@@ -1,0 +1,8 @@
+/target
+/test
+/.vscode
+/model
+*.rc
+*.res
+*.exe
+flamegraph.svg
