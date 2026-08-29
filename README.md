@@ -5,14 +5,16 @@
 This is a UTAU resampler built on [NHVSing](https://github.com/wavtechyukky/NHVSing). After noticing this vocoder, I adapted it from [hifisampler-rs](https://github.com/Slidingwall/hifisampler-rs) to evaluate its performance with UTAU.  
 这是一个基于[NHVSing](https://github.com/wavtechyukky/NHVSing)的UTAU重采样器。我注意到这个声码器后，基于[hifisampler-rs](https://github.com/Slidingwall/hifisampler-rs)进行了修改，以验证其在UTAU上的表现。  
 
+See binaries on [actions](https://github.com/Slidingwall/NHVSampler-rs/actions/workflows/rust.yml).  
+
 ## Using 使用
 
 > [!WARNING]
 > Since this project is a quickly implemented prototype, UTAU/OpenUTAU still uses the client (`hifisampler`) for actual invocation. The server-side executable is named `nhvserver-rust`. To avoid confusion in UTAU/OpenUTAU, **it is not recommended to place both the server and the client in the `resampler` folder.**  
 > 由于本项目是一个快速实现的原型，因此UTAU/OpenUTAU实际调用的客户端仍为(`hifisampler`)。作为服务器端，执行文件名为`nhvserver-rust`。为了避免在UTAU/OpenUTAU中混淆，**不建议您将服务器端与客户端一起放入`resampler`文件夹中**。  
 >
-> The logic for UV detection is still under development, and the current results may not be ideal.
-> 判断UV的逻辑还在开发中，目前的效果可能并不理想。  
+> The logic for UV detection is still under development, and **the current results may not be ideal**.
+> 判断UV的逻辑还在开发中，**目前的效果可能并不理想**。  
 
 The client is as same as hifisampler. If you are using macOS or Linux, you can temporarily use the client of [StrayCat-server](https://github.com/Astel123457/straycat-server/releases/tag/release).  
 客户端与原hifisampler的客户端一致。如果您使用macOS或者Linux，您可以暂时使用[StrayCat-server](https://github.com/Astel123457/straycat-server/releases/tag/release)的客户端。  

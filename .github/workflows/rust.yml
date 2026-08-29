@@ -47,7 +47,7 @@ jobs:
         shell: bash
         run: |
           mkdir -p artifacts
-          BIN_NAME="hifiserver-rust"
+          BIN_NAME="nhvserver-rust"
           case "${{ matrix.os }}" in
             ubuntu-latest)
               cp "target/release/$BIN_NAME" "artifacts/$BIN_NAME"
