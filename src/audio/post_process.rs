@@ -1,10 +1,10 @@
 use ebur128::{EbuR128, Mode};
 use ndarray::{Array2, Axis, Zip, azip, s};
-use crate::{audio::base_coeff::BASE_COEFF, consts::{HOP_SIZE, NHV_CONFIG, SAMPLE_RATE}, utils::{reflect_pad_1d, stft::{istft_core, stft_core}}};
+use crate::{audio::base_coeff::BASE_COEFF, consts::{NHV_CONFIG, SAMPLE_RATE, HOP_SIZE}, utils::{reflect_pad_1d, stft::{istft_core, stft_core}}};
 pub fn pre_emphasis_base_tension(wave: &mut Vec<f32>, b: f32) {
     let orig_len = wave.len();
     let orig_max = wave.iter().fold(0f32, |m, &x| m.max(x.abs()));
-    let padded_len = ((orig_len + HOP_SIZE - 1) / HOP_SIZE) * HOP_SIZE;
+    let padded_len = ((orig_len + *HOP_SIZE - 1) / *HOP_SIZE) * *HOP_SIZE;
     wave.resize(padded_len, 0.0);
     let mut spec = stft_core(&wave); 
     let (_, freq_bins, n_frames) = spec.dim();
@@ -45,7 +45,6 @@ pub fn pre_emphasis_base_tension(wave: &mut Vec<f32>, b: f32) {
 }
 pub fn loudness_norm(wave: &mut Vec<f32>, target: f32, norm_strength: u8) {
     let orig_len = wave.len();
-    if orig_len == 0 { return; }
     let (mut val_start, mut val_end, mut need_restore) = (0, orig_len, false);
     if NHV_CONFIG.trim_silence {
         if 882 <= orig_len {
@@ -78,7 +77,6 @@ pub fn loudness_norm(wave: &mut Vec<f32>, target: f32, norm_strength: u8) {
         }
     }
     let val_len = val_end - val_start;
-    if val_len == 0 { return; }
     if val_len < 17640 {
         reflect_pad_1d(wave, 0, 17640 - val_len);
     }
@@ -93,15 +91,24 @@ pub fn loudness_norm(wave: &mut Vec<f32>, target: f32, norm_strength: u8) {
         (target - loudness_lkfs) * norm_strength as f32 * 0.0005,
     );
     if need_restore {
-        let fade_len = 8820.min(val_len >> 2);
-        let fade_scale = 1.0 / (fade_len - 1) as f32;
-        let vf = val_len - fade_len;
-        for (i, x) in wave[val_start..val_end].iter_mut().enumerate() {
-            let mut g = gain;
-            if i >= vf {
-                g *= (i - vf) as f32 * fade_scale;
+        let mut fade_len = 8820.min(val_len >> 2);
+        if fade_len < 2 { fade_len = 0; }
+        if fade_len > 0 {
+            let fade_scale = 1.0 / (fade_len - 1) as f32;
+            let vf = val_len - fade_len;
+            for (i, x) in wave[val_start..val_end].iter_mut().enumerate() {
+                let mut g = gain;
+                if i >= vf {
+                    g *= (i - vf) as f32 * fade_scale;
+                } else if i < fade_len {
+                    g *= i as f32 * fade_scale;
+                }
+                *x *= g;
             }
-            *x *= g;
+        } else {
+            for x in &mut wave[val_start..val_end] {
+                *x *= gain;
+            }
         }
         wave[..val_start].fill(0.0);
         wave[val_end..].fill(0.0);

@@ -4,6 +4,8 @@ pub mod parser;
 pub mod cache;
 pub mod growl;
 pub mod mel;
+pub mod vuv;
+pub mod llsm;
 mod hann_window;
 mod mel_basis;
 use ndarray::{Array2, ArrayView2, s};

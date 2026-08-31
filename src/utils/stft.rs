@@ -10,7 +10,7 @@ thread_local! {
 }
 pub fn stft_core(signal: &[f32]) -> Array3<f32> {
     let freq_bins = FFT_SIZE / 2 + 1;
-    let n_frames = (signal.len() + HOP_SIZE - 1) / HOP_SIZE;
+    let n_frames = (signal.len() + *HOP_SIZE - 1) / *HOP_SIZE;
     let planner = &*FFT_PLANNER;
     let window = &HANN_WINDOW;
     let mut spec = Array3::zeros((2, freq_bins, n_frames));
@@ -18,7 +18,7 @@ pub fn stft_core(signal: &[f32]) -> Array3<f32> {
         .into_par_iter()
         .enumerate()
         .for_each(|(frame_idx, mut frame_view)| {
-            let start = frame_idx * HOP_SIZE;
+            let start = frame_idx * *HOP_SIZE;
             let slice_end = (start + FFT_SIZE).min(signal.len());
             let slice_len = slice_end - start;
             REAL_BUF.with(|cell| {
@@ -46,7 +46,7 @@ pub fn istft_core(spec: &Array3<f32>, orig_len: usize) -> Vec<f32> {
     let freq_bins = FFT_SIZE / 2 + 1;
     let n_frames = spec.shape()[2];
     let planner = &*FFT_PLANNER;
-    let mut output = vec![0.0; (n_frames - 1) * HOP_SIZE + FFT_SIZE];
+    let mut output = vec![0.0; (n_frames - 1) * *HOP_SIZE + FFT_SIZE];
     let mut weight = vec![0.0; output.len()];
     let mut real_buf = vec![0.0; FFT_SIZE];
     let mut re_buf = vec![0.0; freq_bins];
@@ -57,7 +57,7 @@ pub fn istft_core(spec: &Array3<f32>, orig_len: usize) -> Vec<f32> {
         re_buf.copy_from_slice(re_slice.as_slice().unwrap());
         im_buf.copy_from_slice(im_slice.as_slice().unwrap());
         c2r_fft_f32_with_planner(&re_buf, &im_buf, &mut real_buf, planner);
-        let start = frame_idx * HOP_SIZE;
+        let start = frame_idx * *HOP_SIZE;
         for i in 0..FFT_SIZE {
             let val = real_buf[i] / FFT_SIZE as f32 * HANN_WINDOW[i];
             let pos = start + i;

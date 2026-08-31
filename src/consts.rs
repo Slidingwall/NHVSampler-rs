@@ -1,7 +1,24 @@
 pub const SAMPLE_RATE: u32 = 44100;
 pub const FFT_SIZE: usize = 2048;
-pub const HOP_SIZE: usize = 512;
 pub const ORIGIN_HOP_SIZE: usize = 128;
+pub static IS_V3X: Lazy<bool> = Lazy::new(|| {
+    let name = NHV_CONFIG.vocoder_path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+    if name.contains("v3x") {
+        true
+    } else if name.contains("v3") {
+        false
+    } else {
+        true
+    }
+});
+pub static HOP_SIZE: Lazy<usize> = Lazy::new(|| if *IS_V3X { 512 } else { 256 });
+pub static THOP: Lazy<f32> = Lazy::new(|| {
+    *HOP_SIZE as f32 / SAMPLE_RATE as f32 * if *IS_V3X { 1.0 } else { 0.5 }
+});
 use ini::Ini;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
@@ -16,6 +33,7 @@ pub struct NHVConfig {
     pub peak_limit: f32,
     pub fill: usize,
     pub max_workers: usize,
+    pub voiced_threshold: f32,
 }
 pub static NHV_CONFIG: Lazy<NHVConfig> = Lazy::new(|| load_nhv_config());
 fn load_nhv_config() -> NHVConfig {
@@ -43,6 +61,8 @@ fn load_nhv_config() -> NHVConfig {
             .unwrap_or(6),
         max_workers: def_sec.get("max_workers").and_then(|s| s.parse().ok())
             .unwrap_or(2),
+        voiced_threshold: def_sec.get("voiced_threshold").and_then(|s| s.parse().ok())
+            .unwrap_or(0.93),
     }
 }
 impl Default for NHVConfig {
@@ -56,6 +76,7 @@ impl Default for NHVConfig {
             peak_limit: 1.0,
             fill: 6,
             max_workers: 2,
+            voiced_threshold: 0.93,
         }
     }
 }
@@ -77,6 +98,7 @@ mod tests {
         assert_eq!(default.peak_limit, 1.0);
         assert_eq!(default.fill, 6);
         assert_eq!(default.max_workers, 2);
+        assert_eq!(default.voiced_threshold, 0.93);
     }
     #[test]
     fn test_global_config_init() {
@@ -106,5 +128,15 @@ mod tests {
         assert!(cfg.peak_limit.is_finite());
         assert!(cfg.fill <= 100);
         assert!(cfg.max_workers >= 1 && cfg.max_workers <= 32);
+    }
+    #[test]
+    fn test_vocoder_hop_consistency() {
+        let is_v3x = *IS_V3X;
+        let hop = *HOP_SIZE;
+        let thop = *THOP;
+        assert!(hop == 256 || hop == 512, "HOP_SIZE must be 256 (v3) or 512 (v3x)");
+        assert_eq!(hop, if is_v3x { 512 } else { 256 });
+        let expected = hop as f32 / SAMPLE_RATE as f32 * if is_v3x { 1.0 } else { 0.5 };
+        assert!((thop - expected).abs() < 1e-6, "thop must equal hop/SR times 1.0 for v3x or 0.5 for v3");
     }
 }

@@ -13,8 +13,8 @@ See binaries on [actions](https://github.com/Slidingwall/NHVSampler-rs/actions/w
 > Since this project is a quickly implemented prototype, UTAU/OpenUTAU still uses the client (`hifisampler`) for actual invocation. The server-side executable is named `nhvserver-rust`. To avoid confusion in UTAU/OpenUTAU, **it is not recommended to place both the server and the client in the `resampler` folder.**  
 > 由于本项目是一个快速实现的原型，因此UTAU/OpenUTAU实际调用的客户端仍为(`hifisampler`)。作为服务器端，执行文件名为`nhvserver-rust`。为了避免在UTAU/OpenUTAU中混淆，**不建议您将服务器端与客户端一起放入`resampler`文件夹中**。  
 >
-> The logic for UV detection is still under development, and **the current results may not be ideal**.
-> 判断UV的逻辑还在开发中，**目前的效果可能并不理想**。  
+> UV flag generation relies on the `*.llsm` -> `*.frq` file. It can still work without them, but quality and speed are not guaranteed. Although external UV or F0 results have been loaded, there are still some segments that are misidentified as voiceless consonants; we would like to seek external assistance here.  
+> UV标志的生成基于`*.llsm` -> `*.frq`文件，虽然没有它们也可以，但质量与速度无法得到保证。尽管加载了外部的UV或F0结果，但仍有一些误识别为清辅音的区段存在，在此期望获得外部帮助。  
 
 The client is as same as hifisampler. If you are using macOS or Linux, you can temporarily use the client of [StrayCat-server](https://github.com/Astel123457/straycat-server/releases/tag/release).  
 客户端与原hifisampler的客户端一致。如果您使用macOS或者Linux，您可以暂时使用[StrayCat-server](https://github.com/Astel123457/straycat-server/releases/tag/release)的客户端。  
@@ -24,7 +24,7 @@ The client is as same as hifisampler. If you are using macOS or Linux, you can t
 
 You need the following ONNX models:  
 您需要以下 ONNX 模型：
-- [nhv_v3x](https://github.com/wavtechyukky/NHVSing/tree/main/exported_models/v3) (make sure is `nhv_v3x.onnx`, not decided to support nhv_v3 yet)
+- [nhv_v3 or v3x](https://github.com/wavtechyukky/NHVSing/tree/main/exported_models/v3) (resampler will use the corresponding hop size.)
 
 They should be located in the `./model/` folder within the same directory as the server-side, but you can also customize the model's location by modifying `nhvconfig.ini`.  
 它们应位于与服务器端同目录的`./model/`文件夹内，但您也可以通过修改`nhvconfig.ini`来自定义模型的位置。  

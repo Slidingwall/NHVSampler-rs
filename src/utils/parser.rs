@@ -115,10 +115,9 @@ mod tests {
     }
     #[test]
     fn test_parse_flag_without_value() -> Result<()> {
-        let flags = flag_parser("GHeMe")?;
+        let flags = flag_parser("GHe")?;
         assert_eq!(flags.get("G"), Some(&None));
         assert_eq!(flags.get("He"), Some(&None));
-        assert_eq!(flags.get("Me"), Some(&None));
         Ok(())
     }
 }

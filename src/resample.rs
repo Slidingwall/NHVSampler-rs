@@ -3,31 +3,40 @@ use ndarray::{Array2, Axis, azip, concatenate, s};
 use tracing::info;
 use crate::{
     audio::{post_process::{loudness_norm, pre_emphasis_base_tension}, read_audio, write_audio},
-    consts::{NHV_CONFIG, HOP_SIZE, ORIGIN_HOP_SIZE, SAMPLE_RATE},
+    consts::{NHV_CONFIG, ORIGIN_HOP_SIZE, SAMPLE_RATE},
     model::get_vocoder,
-    utils::{cache::CACHE_MANAGER, growl::growl, interp::{akima, interp1d}, mel::mel, midi_to_hz, reflect_pad_2d, stft::stft_core},
+    server::Arguments,
+    utils::{
+        cache::{CACHE_MANAGER, FEATURE_EXT},
+        growl::growl,
+        interp::{akima, interp1d},
+        mel::mel,
+        midi_to_hz,
+        reflect_pad_2d,
+        stft::stft_core,
+        vuv::vuv,
+    },
 };
-use crate::server::Arguments;
 const SR: f32 = SAMPLE_RATE as f32;
 const THOP_ORIGIN: f32 = ORIGIN_HOP_SIZE as f32 / SR;
-const THOP: f32 = HOP_SIZE as f32 / SR;
-const FEATURE_EXT: &str = ".nhv.bin";
-fn get_features(args: &Arguments) -> Result<(Array2<f32>, f32, Vec<f32>)> {
-    let gender = args.flags.get("g").copied().flatten().unwrap_or(0.0);
+pub fn get_features(args: &Arguments, wave: &[f32]) -> (Array2<f32>, f32, Vec<f32>) {
+    let gender = args.flags.get("g").and_then(|x| *x).unwrap_or(0.0);
     let fname = args.in_file.file_stem().unwrap().to_str().unwrap();
     let features_path = args.in_file.with_file_name(format!(
-        "{}{}{}",
+        "{}{}{}{}",
         fname,
-        if gender != 0.0 { format!("_g{}", gender) } else { "".to_string() },
+        if gender != 0.0 { format!("_g{}", gender) } else { String::new() },
+        format!("_h{}", *crate::consts::HOP_SIZE),
         FEATURE_EXT
     ));
-    let ignore_cache = args.flags.contains_key("G");
-    if let Some((mel, scale, uv)) = CACHE_MANAGER.load_features_cache(&features_path, ignore_cache) {
-        return Ok((mel, scale, uv));
+    if !args.flags.contains_key("G") {
+        if let Some(cached) = CACHE_MANAGER.load_features_cache(&features_path) {
+            return cached;
+        }
     }
     info!("Generating features: {}", features_path.display());
-    let wave = read_audio(&args.in_file)?;
-    let spec_mix = stft_core(&wave);
+    let uv = vuv(wave, &args.in_file, SAMPLE_RATE, ORIGIN_HOP_SIZE);
+    let spec_mix = stft_core(wave);
     let (_, freq_bins, frames) = spec_mix.dim();
     let mut spec_amp = Array2::zeros((freq_bins, frames));
     azip!((o in &mut spec_amp, &r in spec_mix.slice(s![0, .., ..]), &i in spec_mix.slice(s![1, .., ..])) {
@@ -37,29 +46,15 @@ fn get_features(args: &Arguments) -> Result<(Array2<f32>, f32, Vec<f32>)> {
     spec_amp.mapv_inplace(|x| x * scale);
     let mel = mel(&spec_amp, gender.clamp(-600.0, 600.0) * 0.01);
     info!("Gender adjustment: {}, Mel shape: {:?}", gender, mel.dim());
-    let n_bins = freq_bins;
-    let mut uv = Vec::with_capacity(frames);
-    let eps = 1e-10;
-    for frame in 0..frames {
-        let re = spec_mix.slice(s![0, .., frame]);
-        let im = spec_mix.slice(s![1, .., frame]);
-        let mut sum = 0.0;
-        let mut log_sum = 0.0;
-        for (&r, &i) in re.iter().zip(im.iter()) {
-            let mag = r.hypot(i);
-            sum += mag;
-            log_sum += (mag + eps).ln();
-        }
-        let mean_arith = sum / n_bins as f32;
-        let mean_geo = (log_sum / n_bins as f32).exp();
-        let flatness = mean_geo / (mean_arith + eps);
-        uv.push(if flatness > 0.3 { 1.0 } else { 0.0 });
-    }
+    info!("VUV estimated: {} voiced / {} frames",
+          uv.iter().filter(|&&v| v < 0.5).count(), uv.len());
     CACHE_MANAGER.save_features_cache(&features_path, &mel, scale, &uv);
-    Ok((mel, scale, uv))
+    (mel, scale, uv)
 }
 pub fn resample(args: Arguments) -> Result<()> {
-    let (mut mel_origin, scale, uv_origin) = get_features(&args)?;
+    let thop = *crate::consts::THOP;
+    let wave = read_audio(&args.in_file)?;
+    let (mut mel_origin, scale, uv_origin) = get_features(&args, &wave);
     if args.out_file.as_os_str() == "nul" {
         info!("Null output file - skipping write");
         return Ok(());
@@ -91,12 +86,12 @@ pub fn resample(args: Arguments) -> Result<()> {
     let scal_ratio = if stretch_len < length_req { length_req / stretch_len } else { 1.0 };
     let vel_con = vel * con;
     let stretch = |t: f32| if t < vel_con { t / vel } else { con + (t - vel_con) / scal_ratio };
-    let stretched_frames = ((vel_con + (mel_origin.ncols() as f32 * THOP_ORIGIN - con) * scal_ratio) / THOP).floor() as usize + 1;
+    let stretched_frames = ((vel_con + (mel_origin.ncols() as f32 * THOP_ORIGIN - con) * scal_ratio) / thop).floor() as usize + 1;
     let mut stretched_t_mel: Vec<f32> = (0..stretched_frames)
-        .map(|i| (i as f32 + 0.5) * THOP)
+        .map(|i| (i as f32 + 0.5) * thop)
         .collect();
-    let cut_left = (((args.offset * vel) / THOP + 0.5).floor() as usize).saturating_sub(NHV_CONFIG.fill);
-    let cut_right = (stretched_frames - (((length_req + vel_con) / THOP + 0.5).floor() as usize)).saturating_sub(NHV_CONFIG.fill);
+    let cut_left = (((args.offset * vel) / thop + 0.5).floor() as usize).saturating_sub(NHV_CONFIG.fill);
+    let cut_right = (stretched_frames - (((length_req + vel_con) / thop + 0.5).floor() as usize)).saturating_sub(NHV_CONFIG.fill);
     stretched_t_mel.truncate(stretched_t_mel.len() - cut_right);
     stretched_t_mel.drain(..cut_left);
     let idx_stretched: Vec<f32> = stretched_t_mel.iter()
@@ -108,13 +103,13 @@ pub fn resample(args: Arguments) -> Result<()> {
     if let Some(&t_flag) = args.flags.get("t").and_then(|x| x.as_ref()) {
         pitch.iter_mut().for_each(|p| *p += t_flag * 0.01);
     }
-    let cut_left_f = cut_left as f32 * THOP;
+    let cut_left_f = cut_left as f32 * thop;
     let (new_start, new_end) = (args.offset * vel - cut_left_f, length_req + vel_con - cut_left_f);
     let step_pitch = 0.625 / args.tempo;
     let t_max = new_start + (pitch.len() - 1) as f32 * step_pitch;
     let idx_pitch_clamped: Vec<f32> = (0..n_frames)
         .map(|i| {
-            let t = (i as f32 + 0.5) * THOP;
+            let t = (i as f32 + 0.5) * thop;
             let t_clamped = t.clamp(new_start, t_max);
             (t_clamped - new_start) / step_pitch
         })
@@ -122,23 +117,21 @@ pub fn resample(args: Arguments) -> Result<()> {
     let pitch_render = akima(&pitch, &idx_pitch_clamped);
     let f0_render: Vec<f32> = pitch_render.iter().map(|&x| midi_to_hz(x)).collect();
     let mel_render = interp1d(&mel_origin, &idx_stretched);
-    let uv_render = if uv_origin.is_empty() {
-        vec![0.0; n_frames]
-    } else {
-        let last_idx = (uv_origin.len() - 1) as f32;
-        idx_stretched.iter()
+    let last_idx = (uv_origin.len() - 1) as f32;
+    let uv_render: Vec<f32> = idx_stretched.iter()
         .map(|&idx| {
-            let idx_orig = (idx / 4.0).clamp(0.0, last_idx);
-            let i0 = idx_orig.round() as usize;
-            if uv_origin[i0] > 0.5 { 1.0 } else { 0.0 }
+            let p = idx.clamp(0.0, last_idx);
+            let i0 = p.floor() as usize;
+            let i1 = (i0 + 1).min(uv_origin.len() - 1);
+            let f = p - i0 as f32;
+            uv_origin[i0] * (1.0 - f) + uv_origin[i1] * f
         })
-        .collect()
-    };
+        .collect();
     let (mut render, mut harmonic, mut noise ) =
         get_vocoder().lock().unwrap().run(mel_render, f0_render, uv_render);
-    let breath = args.flags.get("Hb").copied().flatten().unwrap_or(100.0);
-    let voicing = args.flags.get("Hv").copied().flatten().unwrap_or(100.0);
-    let tension = args.flags.get("Ht").copied().flatten().unwrap_or(0.0);
+    let breath = args.flags.get("Hb").and_then(|x| *x).unwrap_or(100.0);
+    let voicing = args.flags.get("Hv").and_then(|x| *x).unwrap_or(100.0);
+    let tension = args.flags.get("Ht").and_then(|x| *x).unwrap_or(0.0);
     let bre_scale = breath.clamp(0.0, 500.0) / 100.0;
     let voi_scale = voicing.clamp(0.0, 150.0) / 100.0;
     if tension != 0.0 || (breath - voicing).abs() > 0.001 {
@@ -159,7 +152,7 @@ pub fn resample(args: Arguments) -> Result<()> {
         render.iter_mut().for_each(|x| *x *= bre_scale);
     }
     render.drain(((new_end * SR).min(render.len() as f32) as usize)..);
-    render.drain(..((new_start * SR).max(0.0) as usize));
+    render.drain(..(new_start * SR) as usize);
     if let Some(&a) = args.flags.get("A").and_then(|x| x.as_ref()) {
         let a = a.clamp(-100., 100.) * 1e-4;
         let n = pitch_render.len();
@@ -175,8 +168,8 @@ pub fn resample(args: Arguments) -> Result<()> {
             *d = 5f32.powf(a * *d);
         }
         let last = (g.len() - 1) as f32;
-        let step = (new_end - new_start) / (render.len() as f32 * THOP);
-        let start = new_start / THOP;
+        let step = (new_end - new_start) / (render.len() as f32 * thop);
+        let start = new_start / thop;
         for (i, s) in render.iter_mut().enumerate() {
             let t = start + i as f32 * step;
             *s *= if t <= 0. {
