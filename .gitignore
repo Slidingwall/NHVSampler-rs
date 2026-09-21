@@ -6,3 +6,5 @@
 *.res
 *.exe
 flamegraph.svg
+*.dll
+*.lib

@@ -61,11 +61,21 @@ Basically same as hifisampler-rs.
 |**A**|Amplitude<br/>振幅|-100~100|0|
 |**G**|Force regenerate cache<br/>强制重生成缓存|bool|false|
 |**He**[^2]|Loop mode<br/>循环模式|bool|false|
+|**Ho**|Openness<br/>开口度|-100~100|0|
+|**Hr**|Resonance<br/>共振|-100~100|0|
+|**HE**|Formant emphasis<br/>共振峰加强|-100~100|0|
+|**Hd**|Dryness<br/>干涩|-100~100|0|
+|**HC**|Coarseness<br/>粗糙|0~100|0|
+|**HD**|Distortion<br/>失真|0~100|0|
+|**Hp**|Unease<br/>不安感|0~100|0|
+|**e**[^3]|Force Stretch<br/>强制拉伸|bool|false|
 
 [^1]: Only effective when `wave_norm` is set to `true` in `nhvconfig.ini`, targeting -16 LUFS.  
       仅当`nhvconfig.ini`中，`wave_norm`为`true`时有效，以 -16 LUFS 为基准。  
 [^2]: Globally enabled when `loop_mode` is set to `true` in `nhvconfig.ini`.  
       当`nhvconfig.ini`中，`loop_mode`为`true`时全局启用。  
+[^3]: When set, the render is time-stretched to exactly hit the target length (compress when too long, instead of cutting the tail). Only affects timing, not pitch/formants.  
+      当设置时，渲染会被时间拉伸以精确命中目标时长（过长时压缩而非切尾）。仅影响时长，不影响音高/共振峰。  
 
 You can download OpenUTAU resampler manifest file from [名無絃](https://bowlroll.net/file/335049).  
 您可以下载[名無絃](https://bowlroll.net/file/335049)提供的OpenUTAU重采样器配置文件。  
