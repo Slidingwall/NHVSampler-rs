@@ -2,8 +2,8 @@ use anyhow::Result;
 use ndarray::{Array2, Axis, azip, concatenate, s};
 use tracing::info;
 use crate::{
-    audio::{post_process::{loudness_norm, pre_emphasis_base_tension}, read_audio, write_audio},
-    consts::{NHV_CONFIG, ORIGIN_HOP_SIZE, SAMPLE_RATE},
+    audio::{post_process::{loudness_norm, pre_emphasis_base_tension, formant_openness}, read_audio, write_audio},
+    consts::{NHV_CONFIG, ORIGIN_HOP_SIZE, SAMPLE_RATE, HOP_SIZE, MEL_CENTER_HZ},
     model::get_vocoder,
     server::Arguments,
     utils::{
@@ -83,7 +83,13 @@ pub fn resample(args: Arguments) -> Result<()> {
         stretch_len = pad_size as f32 * THOP_ORIGIN;
         info!("new_total_time: {}", mel_origin.ncols() as f32 * THOP_ORIGIN);
     }
-    let scal_ratio = if stretch_len < length_req { length_req / stretch_len } else { 1.0 };
+    let force_stretch = args.flags.contains_key("e");
+    let scal_ratio = if stretch_len < length_req || force_stretch {
+        length_req / stretch_len
+    } else { 1.0 };
+    if force_stretch {
+        info!("Force Stretch (e) enabled: scal_ratio={:.4}", scal_ratio);
+    }
     let vel_con = vel * con;
     let stretch = |t: f32| if t < vel_con { t / vel } else { con + (t - vel_con) / scal_ratio };
     let stretched_frames = ((vel_con + (mel_origin.ncols() as f32 * THOP_ORIGIN - con) * scal_ratio) / thop).floor() as usize + 1;
@@ -116,7 +122,28 @@ pub fn resample(args: Arguments) -> Result<()> {
         .collect();
     let pitch_render = akima(&pitch, &idx_pitch_clamped);
     let f0_render: Vec<f32> = pitch_render.iter().map(|&x| midi_to_hz(x)).collect();
-    let mel_render = interp1d(&mel_origin, &idx_stretched);
+    let mut mel_render = interp1d(&mel_origin, &idx_stretched);
+    let resonance = args.flags.get("Hr").and_then(|x| *x).unwrap_or(0.0);
+    let formant = args.flags.get("HE").and_then(|x| *x).unwrap_or(0.0);
+    let dryness = args.flags.get("Hd").and_then(|x| *x).unwrap_or(0.0);
+    let roughness = args.flags.get("HC").and_then(|x| *x).unwrap_or(0.0);
+    if resonance != 0.0 || formant != 0.0 || dryness != 0.0 || roughness != 0.0 {
+        let fb = &MEL_CENTER_HZ;
+        let bell = |fc: f32, center: f32, width: f32, gain: f32| (-0.5 * ((fc - center) / width).powi(2) * gain).exp();
+        let (gr, gd, gc) = (resonance * 0.01, dryness * 0.01, roughness * 0.01);
+        let formant_k = if formant > 0.0 { 1.0 + 0.005 * formant } else { 1.0 + 0.0025 * formant };
+        let mut gains = [0.0f32; 128];
+        for b in 0..128 {
+            gains[b] = formant_k
+                * bell(fb[b], 3200.0, 1000.0, gr)
+                * bell(fb[b], 6000.0, 2000.0, gd)
+                * bell(fb[b], 4500.0, 1500.0, gc);
+        }
+        for t in 0..mel_render.nrows() {
+            let mut row = mel_render.row_mut(t);
+            for b in 0..128 { row[b] *= gains[b]; }
+        }
+    }
     let last_idx = (uv_origin.len() - 1) as f32;
     let uv_render: Vec<f32> = idx_stretched.iter()
         .map(|&idx| {
@@ -128,7 +155,7 @@ pub fn resample(args: Arguments) -> Result<()> {
         })
         .collect();
     let (mut render, mut harmonic, mut noise ) =
-        get_vocoder().lock().unwrap().run(mel_render, f0_render, uv_render);
+        get_vocoder().lock().unwrap().run(mel_render, f0_render.clone(), uv_render);
     let breath = args.flags.get("Hb").and_then(|x| *x).unwrap_or(100.0);
     let voicing = args.flags.get("Hv").and_then(|x| *x).unwrap_or(100.0);
     let tension = args.flags.get("Ht").and_then(|x| *x).unwrap_or(0.0);
@@ -150,6 +177,11 @@ pub fn resample(args: Arguments) -> Result<()> {
     } else if breath != 100.0 {
         info!("Applying simple volume scaling: {}", bre_scale);
         render.iter_mut().for_each(|x| *x *= bre_scale);
+    }
+    if let Some(&ho) = args.flags.get("Ho").and_then(|x| x.as_ref()) {
+        if ho != 0.0 {
+            formant_openness(&mut render, &f0_render, *HOP_SIZE, SAMPLE_RATE as f32, ho);
+        }
     }
     render.drain(((new_end * SR).min(render.len() as f32) as usize)..);
     render.drain(..(new_start * SR) as usize);
@@ -191,6 +223,24 @@ pub fn resample(args: Arguments) -> Result<()> {
     }
     if let Some(&hg) = args.flags.get("HG").and_then(|x| x.as_ref()) {
         growl(&mut render, 80.0, hg.clamp(-100.0, 100.0) * 0.01);
+    }
+    let drive = args.flags.get("HD").and_then(|x| *x).map_or(0.0, |v| v.clamp(0.0, 100.0) / 100.0);
+    let amt = args.flags.get("Hp").and_then(|x| *x).map_or(0.0, |v| v.clamp(0.0, 100.0) / 100.0);
+    if drive > 0.0 || amt > 0.0 {
+        let k = 1.0 + drive * 4.0;
+        for (i, s) in render.iter_mut().enumerate() {
+            let mut x = *s;
+            if drive > 0.0 {
+                let v = x * k;
+                x = if v > 1.0 { 1.0 } else if v < -1.0 { -1.0 } else { v * (2.0 - v.abs()) };
+            }
+            if amt > 0.0 {
+                let h = (i as u32).wrapping_mul(2654435761).rotate_left(13);
+                let r = (h & 0x1FFFF) as f32 / 65536.0 - 1.0;
+                x *= 1.0 + amt * 0.08 * r;
+            }
+            *s = x;
+        }
     }
     if NHV_CONFIG.wave_norm {
         let p = args.flags.get("P")

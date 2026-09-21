@@ -1,6 +1,6 @@
 use anyhow::Result;
 use axum::{ extract::State, http::StatusCode, response::IntoResponse, routing::get, Router };
-use std::{ collections::HashMap, net::SocketAddr, path::PathBuf, sync::{Arc, atomic::{AtomicBool, Ordering}} };
+use std::{ borrow::Cow, collections::HashMap, net::SocketAddr, path::PathBuf, sync::{Arc, atomic::{AtomicBool, Ordering}} };
 use tokio::sync::Semaphore;
 use tracing::{info, warn, error};
 use crate::{
@@ -18,7 +18,7 @@ pub struct Arguments {
     pub out_file: PathBuf,
     pub pitch: f32,
     pub velocity: f32,
-    pub flags: HashMap<String, Option<f32>>,
+    pub flags: HashMap<Cow<'static, str>, Option<f32>>,
     pub offset: f32,
     pub length: f32,
     pub consonant: f32,

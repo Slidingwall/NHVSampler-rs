@@ -10,7 +10,12 @@ pub struct NHVLoader {
 }
 impl NHVLoader {
     pub fn new(model_path: &PathBuf) -> Self {
-        let session = Session::builder().unwrap()
+        let mut builder = Session::builder().unwrap();
+        let eps = crate::model::select_execution_providers();
+        if !eps.is_empty() {
+            builder = builder.with_execution_providers(eps).unwrap();
+        }
+        let session = builder
             .with_optimization_level(GraphOptimizationLevel::Level3).unwrap()
             .commit_from_file(model_path).unwrap();
         Self { session }
