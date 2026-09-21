@@ -254,7 +254,7 @@ pub fn resample(args: Arguments) -> Result<()> {
         1.0
     }) * args.volume;
     render.iter_mut().for_each(|x| *x *= mult);
-    write_audio(&args.out_file, &render)?;
+    write_audio(&args.out_file, render)?;
     info!("Successfully processed: {} -> {}", args.in_file.display(), args.out_file.display());
     Ok(())
 }
