@@ -12,23 +12,29 @@ env:
 
 jobs:
   build:
-    name: Build ${{ matrix.ep }} on ${{ matrix.os }}
+    name: Build ${{ matrix.pkg }}
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
       matrix:
         include:
+          # Single-EP systems: name reflects the OS only.
           - os: windows-latest
             ep: ep-directml
-            bin: nhvserver-rust-directml
+            pkg: windows
+            bin: nhvserver-rust
           - os: macos-latest
             ep: ep-coreml
-            bin: nhvserver-rust-coreml
+            pkg: macos
+            bin: nhvserver-rust
+          # Linux ships two EPs, so the EP must appear in the name.
           - os: ubuntu-latest
             ep: ep-webgpu
+            pkg: linux-webgpu
             bin: nhvserver-rust-webgpu
           - os: ubuntu-latest
             ep: ep-cuda
+            pkg: linux-cuda
             bin: nhvserver-rust-cuda
     steps:
       - name: Checkout code
@@ -61,21 +67,22 @@ jobs:
         shell: bash
         run: |
           mkdir -p artifacts
-          BIN_NAME="nhvserver-rust"
+          SRC="nhvserver-rust"
+          DEST="${{ matrix.bin }}"
           case "${{ matrix.os }}" in
             ubuntu-latest)
-              cp "target/release/$BIN_NAME" "artifacts/${{ matrix.bin }}"
+              cp "target/release/$SRC" "artifacts/$DEST"
               ;;
             windows-latest)
-              cp "target/release/$BIN_NAME.exe" "artifacts/${{ matrix.bin }}.exe"
+              cp "target/release/$SRC.exe" "artifacts/$DEST.exe"
               ;;
             macos-latest)
-              cp "target/release/$BIN_NAME" "artifacts/${{ matrix.bin }}"
+              cp "target/release/$SRC" "artifacts/$DEST"
               ;;
           esac
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v5
         with:
-          name: release-${{ matrix.ep }}
+          name: release-${{ matrix.pkg }}
           path: artifacts/*
