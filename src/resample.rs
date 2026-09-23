@@ -2,8 +2,8 @@ use anyhow::Result;
 use ndarray::{Array2, Axis, azip, concatenate, s};
 use tracing::info;
 use crate::{
-    audio::{post_process::{loudness_norm, pre_emphasis_base_tension, formant_openness}, read_audio, write_audio},
-    consts::{NHV_CONFIG, ORIGIN_HOP_SIZE, SAMPLE_RATE, HOP_SIZE, FORMANT_HR},
+    audio::{post_process::{loudness_norm, pre_emphasis_base_tension}, read_audio, write_audio},
+    consts::{NHV_CONFIG, ORIGIN_HOP_SIZE, SAMPLE_RATE, FORMANT_HR, MEL_BIN_CENTER_HZ},
     model::get_vocoder,
     server::Arguments,
     utils::{
@@ -127,9 +127,12 @@ pub fn resample(args: Arguments) -> Result<()> {
     let formant = args.flags.get("HE").and_then(|x| *x).unwrap_or(0.0);
     let dryness = args.flags.get("Hd").and_then(|x| *x).unwrap_or(0.0);
     let roughness = args.flags.get("HC").and_then(|x| *x).unwrap_or(0.0);
-    if resonance != 0.0 || formant != 0.0 || dryness != 0.0 || roughness != 0.0 {
+    let openness = args.flags.get("Ho").and_then(|x| *x).unwrap_or(0.0);
+    if resonance != 0.0 || formant != 0.0 || dryness != 0.0 || roughness != 0.0 || openness != 0.0 {
+        let g0 = 1.413_f32; 
         for t in 0..mel_render.nrows() {
             let mut row = mel_render.row_mut(t);
+            let f0 = f0_render[t];
             for b in 0usize..128 {
                 if resonance != 0.0 {
                     let mag = FORMANT_HR[b] * 0.1 * resonance.abs();
@@ -137,6 +140,11 @@ pub fn resample(args: Arguments) -> Result<()> {
                 }
                 if dryness != 0.0 {
                     row[b] -= 0.025 * dryness;
+                }
+                if openness != 0.0 {
+                    let lorentz = 1.0 / (1.0 + ((MEL_BIN_CENTER_HZ[b] - f0) / 150.0).powi(2));
+                    let h_res = 1.0 + (g0 - 1.0) * lorentz;
+                    row[b] -= h_res.ln() * openness / 300.0;
                 }
             }
             if roughness != 0.0 {
@@ -188,11 +196,6 @@ pub fn resample(args: Arguments) -> Result<()> {
     } else if breath != 100.0 {
         info!("Applying simple volume scaling: {}", bre_scale);
         render.iter_mut().for_each(|x| *x *= bre_scale);
-    }
-    if let Some(&ho) = args.flags.get("Ho").and_then(|x| x.as_ref()) {
-        if ho != 0.0 {
-            formant_openness(&mut render, &f0_render, *HOP_SIZE, SAMPLE_RATE as f32, ho);
-        }
     }
     render.drain(((new_end * SR).min(render.len() as f32) as usize)..);
     render.drain(..(new_start * SR) as usize);
