@@ -39,10 +39,13 @@ pub fn get_features(args: &Arguments, wave: &[f32]) -> (Array2<f32>, f32, Vec<f3
     let spec_mix = stft_core(wave);
     let (_, freq_bins, frames) = spec_mix.dim();
     let mut spec_amp = Array2::zeros((freq_bins, frames));
+    let mut amp_max = 0.0f32;
     azip!((o in &mut spec_amp, &r in spec_mix.slice(s![0, .., ..]), &i in spec_mix.slice(s![1, .., ..])) {
-        *o = r.hypot(i);
+        let a = r.hypot(i);
+        *o = a;
+        if a > amp_max { amp_max = a; }
     });
-    let scale = 256f32.max(spec_amp.iter().fold(0.0, |m, &x| m.max(x))).recip() * 256.0;
+    let scale = 256f32.max(amp_max).recip() * 256.0;
     spec_amp.mapv_inplace(|x| x * scale);
     let mel = mel(&spec_amp, gender.clamp(-600.0, 600.0) * 0.01);
     info!("Gender adjustment: {}, Mel shape: {:?}", gender, mel.dim());
@@ -197,26 +200,24 @@ pub fn resample(args: Arguments) -> Result<()> {
     }
     render.drain(((new_end * SR).min(render.len() as f32) as usize)..);
     render.drain(..(new_start * SR) as usize);
+    let mut new_max = 0.0f32;
     if let Some(&a) = args.flags.get("A").and_then(|x| x.as_ref()) {
         let a = a.clamp(-100., 100.) * 1e-4;
         let n = pitch_render.len();
         let mut g = vec![0.; n];
         if n > 1 {
-            g[0] = pitch_render[1] - pitch_render[0];
+            g[0] = 5f32.powf(a * (pitch_render[1] - pitch_render[0]));
             for i in 1..n - 1 {
-                g[i] = (pitch_render[i + 1] - pitch_render[i - 1]) * 0.5;
+                g[i] = 5f32.powf(a * ((pitch_render[i + 1] - pitch_render[i - 1]) * 0.5));
             }
-            g[n - 1] = pitch_render[n - 1] - pitch_render[n - 2];
-        }
-        for d in &mut g {
-            *d = 5f32.powf(a * *d);
+            g[n - 1] = 5f32.powf(a * (pitch_render[n - 1] - pitch_render[n - 2]));
         }
         let last = (g.len() - 1) as f32;
         let step = (new_end - new_start) / (render.len() as f32 * thop);
         let start = new_start / thop;
         for (i, s) in render.iter_mut().enumerate() {
             let t = start + i as f32 * step;
-            *s *= if t <= 0. {
+            let gv = if t <= 0. {
                 g[0]
             } else if t >= last {
                 g[last as usize]
@@ -225,13 +226,17 @@ pub fn resample(args: Arguments) -> Result<()> {
                 let f = t - i0 as f32;
                 g[i0] + (g[i0 + 1] - g[i0]) * f
             };
+            let v = *s * gv / scale;
+            *s = v;
+            let abs = v.abs();
+            if abs > new_max { new_max = abs; }
         }
-    }
-    let mut new_max = 0.0f32;
-    for x in render.iter_mut() {
-        *x /= scale;
-        let abs = x.abs();
-        if abs > new_max { new_max = abs; }
+    } else {
+        for x in render.iter_mut() {
+            *x /= scale;
+            let abs = x.abs();
+            if abs > new_max { new_max = abs; }
+        }
     }
     if let Some(&hg) = args.flags.get("HG").and_then(|x| x.as_ref()) {
         growl(&mut render, 80.0, hg.clamp(-100.0, 100.0) * 0.01);
