@@ -93,22 +93,16 @@ pub fn resample(args: Arguments) -> Result<()> {
     let vel_con = vel * con;
     let stretch = |t: f32| if t < vel_con { t / vel } else { con + (t - vel_con) / scal_ratio };
     let stretched_frames = ((vel_con + (mel_origin.ncols() as f32 * THOP_ORIGIN - con) * scal_ratio) / thop).floor() as usize + 1;
-    let mut stretched_t_mel: Vec<f32> = (0..stretched_frames)
-        .map(|i| (i as f32 + 0.5) * thop)
-        .collect();
     let cut_left = (((args.offset * vel) / thop + 0.5).floor() as usize).saturating_sub(NHV_CONFIG.fill);
     let cut_right = (stretched_frames - (((length_req + vel_con) / thop + 0.5).floor() as usize)).saturating_sub(NHV_CONFIG.fill);
-    stretched_t_mel.truncate(stretched_t_mel.len() - cut_right);
-    stretched_t_mel.drain(..cut_left);
-    let idx_stretched: Vec<f32> = stretched_t_mel.iter()
-        .map(|&t| (stretch(t) / THOP_ORIGIN - 0.5).clamp(0.0, (mel_origin.ncols() - 1) as f32))
+    let idx_stretched: Vec<f32> = (cut_left..stretched_frames - cut_right)
+        .map(|i| (i as f32 + 0.5) * thop)
+        .map(|t| (stretch(t) / THOP_ORIGIN - 0.5).clamp(0.0, (mel_origin.ncols() - 1) as f32))
         .collect();
     let n_frames = idx_stretched.len();
     info!("Stretched time axis length: {}", n_frames);
-    let mut pitch: Vec<f32> = args.pitchbend.iter().map(|&pb| pb + args.pitch).collect();
-    if let Some(&t_flag) = args.flags.get("t").and_then(|x| x.as_ref()) {
-        pitch.iter_mut().for_each(|p| *p += t_flag * 0.01);
-    }
+    let t_shift = args.flags.get("t").and_then(|x| x.as_ref()).map_or(0.0, |&t| t * 0.01);
+    let pitch: Vec<f32> = args.pitchbend.iter().map(|&pb| pb + args.pitch + t_shift).collect();
     let cut_left_f = cut_left as f32 * thop;
     let (new_start, new_end) = (args.offset * vel - cut_left_f, length_req + vel_con - cut_left_f);
     let step_pitch = 0.625 / args.tempo;
@@ -130,13 +124,17 @@ pub fn resample(args: Arguments) -> Result<()> {
     let openness = args.flags.get("Ho").and_then(|x| *x).unwrap_or(0.0);
     if resonance != 0.0 || formant != 0.0 || dryness != 0.0 || roughness != 0.0 || openness != 0.0 {
         let g0 = 1.413_f32; 
+        let res_ln: Vec<f32> = if resonance != 0.0 {
+            (0..128).map(|b| (1.0 + FORMANT_HR[b] * 0.1 * resonance.abs()).ln()).collect()
+        } else {
+            Vec::new()
+        };
         for t in 0..mel_render.nrows() {
             let mut row = mel_render.row_mut(t);
             let f0 = f0_render[t];
             for b in 0usize..128 {
                 if resonance != 0.0 {
-                    let mag = FORMANT_HR[b] * 0.1 * resonance.abs();
-                    row[b] += if resonance > 0.0 { (1.0 + mag).ln() } else { -(1.0 + mag).ln() };
+                    row[b] += if resonance > 0.0 { res_ln[b] } else { -res_ln[b] };
                 }
                 if dryness != 0.0 {
                     row[b] -= 0.025 * dryness;
@@ -173,8 +171,8 @@ pub fn resample(args: Arguments) -> Result<()> {
             uv_origin[i0] * (1.0 - f) + uv_origin[i1] * f
         })
         .collect();
-    let (mut render, mut harmonic, mut noise ) =
-        get_vocoder().lock().unwrap().run(mel_render, f0_render.clone(), uv_render);
+    let (mut render, mut harmonic, mut noise) =
+        get_vocoder().lock().unwrap().run(mel_render, f0_render, uv_render);
     let breath = args.flags.get("Hb").and_then(|x| *x).unwrap_or(100.0);
     let voicing = args.flags.get("Hv").and_then(|x| *x).unwrap_or(100.0);
     let tension = args.flags.get("Ht").and_then(|x| *x).unwrap_or(0.0);

@@ -1,8 +1,22 @@
 use crate::{consts::{FFT_SIZE, HOP_SIZE}, utils::hann_window::HANN_WINDOW};
-use ndarray::{Array3, ArrayView1, Axis, parallel::prelude::*, s};
+use ndarray::{Array3, Axis, parallel::prelude::*, s};
 use once_cell::sync::Lazy;
 use phastft::{c2r_fft_f32_with_planner, planner::PlannerR2c32, r2c_fft_f32_with_planner};
 static FFT_PLANNER: Lazy<PlannerR2c32> = Lazy::new(|| PlannerR2c32::new(FFT_SIZE));
+static HANN_FFT_SCALE: Lazy<[f32; FFT_SIZE]> = Lazy::new(|| {
+    let mut a = [0.0; FFT_SIZE];
+    for (i, v) in a.iter_mut().enumerate() {
+        *v = HANN_WINDOW[i] / FFT_SIZE as f32;
+    }
+    a
+});
+static HANN_SQ: Lazy<[f32; FFT_SIZE]> = Lazy::new(|| {
+    let mut a = [0.0; FFT_SIZE];
+    for (i, v) in a.iter_mut().enumerate() {
+        *v = HANN_WINDOW[i] * HANN_WINDOW[i];
+    }
+    a
+});
 thread_local! {
     static REAL_BUF: std::cell::RefCell<[f32; FFT_SIZE]> = std::cell::RefCell::new([0.0; FFT_SIZE]);
     static RE_BUF: std::cell::RefCell<[f32; 1025]> = std::cell::RefCell::new([0.0; 1025]);
@@ -29,13 +43,15 @@ pub fn stft_core(signal: &[f32]) -> Array3<f32> {
                 for i in slice_len..FFT_SIZE {
                     real_input[i] = 0.0;
                 }
-                RE_BUF.with(|re_cell| {
-                    IM_BUF.with(|im_cell| {
-                        let mut spec_re = re_cell.borrow_mut();
-                        let mut spec_im = im_cell.borrow_mut();
-                        r2c_fft_f32_with_planner(&real_input[..], &mut spec_re[..], &mut spec_im[..], planner);
-                        frame_view.row_mut(0).assign(&ArrayView1::from(&*spec_re));
-                        frame_view.row_mut(1).assign(&ArrayView1::from(&*spec_im));
+                RE_BUF.with(|rb| {
+                    IM_BUF.with(|ib| {
+                        let (mut re, mut im) = (rb.borrow_mut(), ib.borrow_mut());
+                        r2c_fft_f32_with_planner(&real_input[..], re.as_mut_slice(), im.as_mut_slice(), planner);
+                        let (mut spec_re, mut spec_im) = frame_view.multi_slice_mut((s![0, ..], s![1, ..]));
+                        for (j, (&rv, &iv)) in re.iter().zip(im.iter()).enumerate() {
+                            spec_re[j] = rv;
+                            spec_im[j] = iv;
+                        }
                     });
                 });
             });
@@ -51,19 +67,20 @@ pub fn istft_core(spec: &Array3<f32>, orig_len: usize) -> Vec<f32> {
     let mut real_buf = vec![0.0; FFT_SIZE];
     let mut re_buf = vec![0.0; freq_bins];
     let mut im_buf = vec![0.0; freq_bins];
+    let hann_fft = &*HANN_FFT_SCALE;
+    let hann_sq = &*HANN_SQ;
     for frame_idx in 0..n_frames {
-        let re_slice = spec.slice(s![0, .., frame_idx]);
-        let im_slice = spec.slice(s![1, .., frame_idx]);
-        re_buf.copy_from_slice(re_slice.as_slice().unwrap());
-        im_buf.copy_from_slice(im_slice.as_slice().unwrap());
+        for j in 0..freq_bins {
+            re_buf[j] = spec[[0, j, frame_idx]];
+            im_buf[j] = spec[[1, j, frame_idx]];
+        }
         c2r_fft_f32_with_planner(&re_buf, &im_buf, &mut real_buf, planner);
         let start = frame_idx * *HOP_SIZE;
         for i in 0..FFT_SIZE {
-            let val = real_buf[i] / FFT_SIZE as f32 * HANN_WINDOW[i];
             let pos = start + i;
             if pos < output.len() {
-                output[pos] += val;
-                weight[pos] += HANN_WINDOW[i] * HANN_WINDOW[i];
+                output[pos] += real_buf[i] * hann_fft[i];
+                weight[pos] += hann_sq[i];
             }
         }
     }

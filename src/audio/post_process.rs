@@ -1,5 +1,4 @@
 use ebur128::{EbuR128, Mode};
-use ndarray::{Array2, Axis, Zip, azip, s};
 use crate::{audio::base_coeff::BASE_COEFF, consts::{NHV_CONFIG, SAMPLE_RATE, HOP_SIZE}, utils::{reflect_pad_1d, stft::{istft_core, stft_core}}};
 pub fn pre_emphasis_base_tension(wave: &mut Vec<f32>, b: f32) {
     let orig_len = wave.len();
@@ -8,35 +7,31 @@ pub fn pre_emphasis_base_tension(wave: &mut Vec<f32>, b: f32) {
     wave.resize(padded_len, 0.0);
     let mut spec = stft_core(&wave); 
     let (_, freq_bins, n_frames) = spec.dim();
-    let mut amp = Array2::zeros((freq_bins, n_frames));
-    let re = spec.slice(s![0, .., ..]);
-    let im = spec.slice(s![1, .., ..]);
-    azip!((r in &re, i in &im, a in &mut amp) {
-        *a = (r * r + i * i).sqrt().max(1e-9);
-    });
+    let factor = (-b / 15.0).clamp(0.0, 0.33) + 1.0;
     let mut orig_max_amp = 0.0;
     let mut f_max_amp = 0.0;
-    for (j, mut bin) in amp.axis_iter_mut(Axis(0)).enumerate() {
+    for j in 0..freq_bins {
         let scale = (b * BASE_COEFF[j]).clamp(-2.0, 2.0).exp();
-        for v in bin.iter_mut() {
-            if *v > orig_max_amp { orig_max_amp = *v; }
-            *v *= scale;
-            if *v > f_max_amp { f_max_amp = *v; }
-        }
-    }
-    let gain = (orig_max_amp / f_max_amp) * ((-b / 15.0).clamp(0.0, 0.33) + 1.0);
-    amp.mapv_inplace(|x| x * gain);
-    Zip::indexed(amp.view())
-        .for_each(|(j, i), &a| {
+        for i in 0..n_frames {
             let r = spec[[0, j, i]];
             let im = spec[[1, j, i]];
-            let phase = im.atan2(r);
-            spec[[0, j, i]] = a * phase.cos();
-            spec[[1, j, i]] = a * phase.sin();
-        });
+            let mag = (r * r + im * im).sqrt().max(1e-9);
+            if mag > orig_max_amp { orig_max_amp = mag; }
+            let sm = mag * scale;
+            if sm > f_max_amp { f_max_amp = sm; }
+        }
+    }
+    let gain = (orig_max_amp / f_max_amp) * factor;
+    for j in 0..freq_bins {
+        let s = (b * BASE_COEFF[j]).clamp(-2.0, 2.0).exp() * gain;
+        for i in 0..n_frames {
+            spec[[0, j, i]] *= s;
+            spec[[1, j, i]] *= s;
+        }
+    }
     let filtered = istft_core(&spec, orig_len);
     let f_max_abs = filtered.iter().fold(0f32, |m, &x| m.max(x.abs()));
-    let gain2 = (orig_max / f_max_abs) * ((-b / 15.0).clamp(0.0, 0.33) + 1.0);
+    let gain2 = (orig_max / f_max_abs) * factor;
     wave.truncate(orig_len);
     for (w, f) in wave.iter_mut().zip(filtered.iter()) {
         *w = f * gain2;

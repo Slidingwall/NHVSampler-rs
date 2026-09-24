@@ -78,6 +78,9 @@ pub fn vuv(wave: &[f32], in_file: &Path, sr: u32, hop: usize) -> Vec<f32> {
             }
         }
         for tau in (best_tau - d).max(lag_min)..=(best_tau + d).min(lag_max).min(w - 1) {
+            if tau == best_tau {
+                continue;
+            }
             let tw = w - tau;
             let (a, b) = (&hp[..tw], &hp[tau..w]);
             let (mut s0, mut s1, mut s2, mut s3) = (0.0f32, 0.0f32, 0.0f32, 0.0f32);
