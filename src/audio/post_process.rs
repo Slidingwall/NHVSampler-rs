@@ -8,10 +8,11 @@ pub fn pre_emphasis_base_tension(wave: &mut Vec<f32>, b: f32) {
     let mut spec = stft_core(&wave); 
     let (_, freq_bins, n_frames) = spec.dim();
     let factor = (-b / 15.0).clamp(0.0, 0.33) + 1.0;
+    let scales: Vec<f32> = (0..freq_bins).map(|j| (b * BASE_COEFF[j]).clamp(-2.0, 2.0).exp()).collect();
     let mut orig_max_amp = 0.0;
     let mut f_max_amp = 0.0;
     for j in 0..freq_bins {
-        let scale = (b * BASE_COEFF[j]).clamp(-2.0, 2.0).exp();
+        let scale = scales[j];
         for i in 0..n_frames {
             let r = spec[[0, j, i]];
             let im = spec[[1, j, i]];
@@ -23,7 +24,7 @@ pub fn pre_emphasis_base_tension(wave: &mut Vec<f32>, b: f32) {
     }
     let gain = (orig_max_amp / f_max_amp) * factor;
     for j in 0..freq_bins {
-        let s = (b * BASE_COEFF[j]).clamp(-2.0, 2.0).exp() * gain;
+        let s = scales[j] * gain;
         for i in 0..n_frames {
             spec[[0, j, i]] *= s;
             spec[[1, j, i]] *= s;

@@ -76,12 +76,11 @@ pub fn istft_core(spec: &Array3<f32>, orig_len: usize) -> Vec<f32> {
         }
         c2r_fft_f32_with_planner(&re_buf, &im_buf, &mut real_buf, planner);
         let start = frame_idx * *HOP_SIZE;
-        for i in 0..FFT_SIZE {
+        let end = (start + FFT_SIZE).min(output.len());
+        for i in 0..end - start {
             let pos = start + i;
-            if pos < output.len() {
-                output[pos] += real_buf[i] * hann_fft[i];
-                weight[pos] += hann_sq[i];
-            }
+            output[pos] += real_buf[i] * hann_fft[i];
+            weight[pos] += hann_sq[i];
         }
     }
     for i in 0..orig_len.min(output.len()) {

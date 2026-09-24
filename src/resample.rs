@@ -165,13 +165,23 @@ pub fn resample(args: Arguments) -> Result<()> {
         }
     }
     let last_idx = (uv_origin.len() - 1) as f32;
+    let mut last_i0 = usize::MAX;
+    let mut last_v0 = 0.0f32;
     let uv_render: Vec<f32> = idx_stretched.iter()
         .map(|&idx| {
             let p = idx.clamp(0.0, last_idx);
             let i0 = p.floor() as usize;
-            let i1 = (i0 + 1).min(uv_origin.len() - 1);
             let f = p - i0 as f32;
-            uv_origin[i0] * (1.0 - f) + uv_origin[i1] * f
+            let v0 = if i0 == last_i0 {
+                last_v0
+            } else {
+                let v = uv_origin[i0];
+                last_i0 = i0;
+                last_v0 = v;
+                v
+            };
+            let i1 = (i0 + 1).min(uv_origin.len() - 1);
+            v0 * (1.0 - f) + uv_origin[i1] * f
         })
         .collect();
     let (mut render, mut harmonic, mut noise) =
