@@ -98,11 +98,30 @@ pub fn resample(args: Arguments) -> Result<()> {
     let stretched_frames = ((vel_con + (mel_origin.ncols() as f32 * THOP_ORIGIN - con) * scal_ratio) / thop).floor() as usize + 1;
     let cut_left = (((args.offset * vel) / thop + 0.5).floor() as usize).saturating_sub(NHV_CONFIG.fill);
     let cut_right = (stretched_frames - (((length_req + vel_con) / thop + 0.5).floor() as usize)).saturating_sub(NHV_CONFIG.fill);
-    let idx_stretched: Vec<f32> = (cut_left..stretched_frames - cut_right)
-        .map(|i| (i as f32 + 0.5) * thop)
-        .map(|t| (stretch(t) / THOP_ORIGIN - 0.5).clamp(0.0, (mel_origin.ncols() - 1) as f32))
-        .collect();
-    let n_frames = idx_stretched.len();
+    let n_frames = stretched_frames - cut_left - cut_right;
+    let last_idx = (uv_origin.len() - 1) as f32;
+    let mut idx_stretched: Vec<f32> = Vec::with_capacity(n_frames);
+    let mut uv_render: Vec<f32> = Vec::with_capacity(n_frames);
+    let mut last_i0 = usize::MAX;
+    let mut last_v0 = 0.0f32;
+    for i in cut_left..stretched_frames - cut_right {
+        let t = (i as f32 + 0.5) * thop;
+        let idx = (stretch(t) / THOP_ORIGIN - 0.5).clamp(0.0, (mel_origin.ncols() - 1) as f32);
+        idx_stretched.push(idx);
+        let p = idx.clamp(0.0, last_idx);
+        let i0 = p.floor() as usize;
+        let f = p - i0 as f32;
+        let v0 = if i0 == last_i0 {
+            last_v0
+        } else {
+            let v = uv_origin[i0];
+            last_i0 = i0;
+            last_v0 = v;
+            v
+        };
+        let i1 = (i0 + 1).min(uv_origin.len() - 1);
+        uv_render.push(v0 * (1.0 - f) + uv_origin[i1] * f);
+    }
     info!("Stretched time axis length: {}", n_frames);
     let t_shift = args.flags.get("t").and_then(|x| x.as_ref()).map_or(0.0, |&t| t * 0.01);
     let pitch: Vec<f32> = args.pitchbend.iter().map(|&pb| pb + args.pitch + t_shift).collect();
@@ -164,26 +183,6 @@ pub fn resample(args: Arguments) -> Result<()> {
             }
         }
     }
-    let last_idx = (uv_origin.len() - 1) as f32;
-    let mut last_i0 = usize::MAX;
-    let mut last_v0 = 0.0f32;
-    let uv_render: Vec<f32> = idx_stretched.iter()
-        .map(|&idx| {
-            let p = idx.clamp(0.0, last_idx);
-            let i0 = p.floor() as usize;
-            let f = p - i0 as f32;
-            let v0 = if i0 == last_i0 {
-                last_v0
-            } else {
-                let v = uv_origin[i0];
-                last_i0 = i0;
-                last_v0 = v;
-                v
-            };
-            let i1 = (i0 + 1).min(uv_origin.len() - 1);
-            v0 * (1.0 - f) + uv_origin[i1] * f
-        })
-        .collect();
     let (mut render, mut harmonic, mut noise) =
         get_vocoder().lock().unwrap().run(mel_render, f0_render, uv_render);
     let breath = args.flags.get("Hb").and_then(|x| *x).unwrap_or(100.0);
@@ -191,7 +190,7 @@ pub fn resample(args: Arguments) -> Result<()> {
     let tension = args.flags.get("Ht").and_then(|x| *x).unwrap_or(0.0);
     let bre_scale = breath.clamp(0.0, 500.0) / 100.0;
     let voi_scale = voicing.clamp(0.0, 150.0) / 100.0;
-    if tension != 0.0 || (breath - voicing).abs() > 0.001 {
+    if tension != 0.0 {
         info!("Applying breath/voicing/tension: breath={}, voicing={}, tension={}",
               breath, voicing, tension);
         if breath != 100.0 {
@@ -200,10 +199,12 @@ pub fn resample(args: Arguments) -> Result<()> {
         if voicing != 100.0 {
             harmonic.iter_mut().for_each(|x| *x *= voi_scale);
         }
-        if tension != 0.0 {
-            pre_emphasis_base_tension(&mut harmonic, -tension.clamp(-100.0, 100.0) * 0.02);
-        }
+        pre_emphasis_base_tension(&mut harmonic, -tension.clamp(-100.0, 100.0) * 0.02);
         render.iter_mut().zip(&harmonic).zip(&noise).for_each(|((w, &h), &n)| *w = h + n);
+    } else if (breath - voicing).abs() > 0.001 {
+        info!("Applying breath/voicing: breath={}, voicing={}", breath, voicing);
+        render.iter_mut().zip(&harmonic).zip(&noise)
+            .for_each(|((w, &h), &n)| *w = h * voi_scale + n * bre_scale);
     } else if breath != 100.0 {
         info!("Applying simple volume scaling: {}", bre_scale);
         render.iter_mut().for_each(|x| *x *= bre_scale);
