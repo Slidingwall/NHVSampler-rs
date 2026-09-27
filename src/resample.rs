@@ -3,7 +3,7 @@ use ndarray::{Array2, Axis, azip, concatenate, s};
 use tracing::info;
 use crate::{
     audio::{post_process::{loudness_norm, pre_emphasis_base_tension}, read_audio, write_audio},
-    consts::{NHV_CONFIG, ORIGIN_HOP_SIZE, SAMPLE_RATE, FORMANT_HR, MEL_BIN_CENTER_HZ},
+    consts::{NHV_CONFIG, ORIGIN_HOP_SIZE, SAMPLE_RATE, MEL_BIN_CENTER_HZ},
     model::get_vocoder,
     server::Arguments,
     utils::{
@@ -144,27 +144,47 @@ pub fn resample(args: Arguments) -> Result<()> {
     let dryness = args.flags.get("Hd").and_then(|x| *x).unwrap_or(0.0);
     let roughness = args.flags.get("HC").and_then(|x| *x).unwrap_or(0.0);
     let openness = args.flags.get("Ho").and_then(|x| *x).unwrap_or(0.0);
-    if resonance != 0.0 || formant != 0.0 || dryness != 0.0 || roughness != 0.0 || openness != 0.0 {
-        let g0 = 1.413_f32; 
+    if resonance != 0.0 || formant != 0.0 || roughness != 0.0 || openness != 0.0 {
         let res_ln: Vec<f32> = if resonance != 0.0 {
-            (0..128).map(|b| (1.0 + FORMANT_HR[b] * 0.1 * resonance.abs()).ln()).collect()
+            let r = (-std::f32::consts::PI * 1000.0 / SR).exp();
+            let r2 = r * r;
+            let c0 = (2.0 * std::f32::consts::PI * 3200.0 / SR).cos();
+            let den0 = (1.0 - r) * (1.0 - r);
+            let neg = if resonance < 0.0 { 0.09900990099009901 } else { 1.0 };
+            (0..128).map(|b| {
+                let w = 2.0 * std::f32::consts::PI * MEL_BIN_CENTER_HZ[b] / SR;
+                let (sw, cw) = w.sin_cos();
+                let re = 1.0 - 2.0 * r * c0 * cw + r2 * (2.0 * cw * cw - 1.0);
+                let im = 2.0 * r * c0 * sw - r2 * 2.0 * sw * cw;
+                let den = re.hypot(im).max(1e-12);
+                (1.0 + 0.1 * resonance * (den0 / den) * neg).ln()
+            }).collect()
         } else {
             Vec::new()
         };
+        let open: Option<(f32, f32, f32, Vec<(f32, f32)>, f32)> = if openness != 0.0 {
+            let r = (-std::f32::consts::PI * 300.0 / SR).exp();
+            let r2 = r * r;
+            let k0 = 2.0 * (1.0 + r).ln();
+            let wtab: Vec<(f32, f32)> = MEL_BIN_CENTER_HZ.iter().map(|&hz| {
+                let w = 2.0 * std::f32::consts::PI * hz / SR;
+                w.sin_cos()
+            }).collect();
+            Some((r, r2, k0, wtab, openness * std::f32::consts::LN_2 / 600.0))
+        } else { None };
         for t in 0..mel_render.nrows() {
             let mut row = mel_render.row_mut(t);
-            let f0 = f0_render[t];
+            let c0f = (2.0 * std::f32::consts::PI * f0_render[t] / SR).cos();
             for b in 0usize..128 {
                 if resonance != 0.0 {
-                    row[b] += if resonance > 0.0 { res_ln[b] } else { -res_ln[b] };
+                    row[b] += res_ln[b];
                 }
-                if dryness != 0.0 {
-                    row[b] -= 0.025 * dryness;
-                }
-                if openness != 0.0 {
-                    let lorentz = 1.0 / (1.0 + ((MEL_BIN_CENTER_HZ[b] - f0) / 150.0).powi(2));
-                    let h_res = 1.0 + (g0 - 1.0) * lorentz;
-                    row[b] -= h_res.ln() * openness / 300.0;
+                if let Some((r, r2, k0, ref wtab, a)) = open {
+                    let (sw, cw) = wtab[b];
+                    let re = 1.0 - 2.0 * r * c0f * cw + r2 * (2.0 * cw * cw - 1.0);
+                    let im = 2.0 * r * c0f * sw - r2 * 2.0 * sw * cw;
+                    let d = re * re + im * im;
+                    row[b] *= (-a * (k0 - 0.5 * d.ln())).exp();
                 }
             }
             if roughness != 0.0 {
@@ -190,6 +210,7 @@ pub fn resample(args: Arguments) -> Result<()> {
     let tension = args.flags.get("Ht").and_then(|x| *x).unwrap_or(0.0);
     let bre_scale = breath.clamp(0.0, 500.0) / 100.0;
     let voi_scale = voicing.clamp(0.0, 150.0) / 100.0;
+    let dry_k = (0.025 * dryness).exp();
     if tension != 0.0 {
         info!("Applying breath/voicing/tension: breath={}, voicing={}, tension={}",
               breath, voicing, tension);
@@ -200,11 +221,11 @@ pub fn resample(args: Arguments) -> Result<()> {
             harmonic.iter_mut().for_each(|x| *x *= voi_scale);
         }
         pre_emphasis_base_tension(&mut harmonic, -tension.clamp(-100.0, 100.0) * 0.02);
-        render.iter_mut().zip(&harmonic).zip(&noise).for_each(|((w, &h), &n)| *w = h + n);
-    } else if (breath - voicing).abs() > 0.001 {
-        info!("Applying breath/voicing: breath={}, voicing={}", breath, voicing);
+        render.iter_mut().zip(&harmonic).zip(&noise).for_each(|((w, &h), &n)| *w = h * dry_k + n / dry_k);
+    } else if (breath - voicing).abs() > 0.001 || dryness != 0.0 {
+        info!("Applying breath/voicing/dryness: breath={}, voicing={}, dryness={}", breath, voicing, dryness);
         render.iter_mut().zip(&harmonic).zip(&noise)
-            .for_each(|((w, &h), &n)| *w = h * voi_scale + n * bre_scale);
+            .for_each(|((w, &h), &n)| *w = h * voi_scale * dry_k + n * bre_scale / dry_k);
     } else if breath != 100.0 {
         info!("Applying simple volume scaling: {}", bre_scale);
         render.iter_mut().for_each(|x| *x *= bre_scale);
