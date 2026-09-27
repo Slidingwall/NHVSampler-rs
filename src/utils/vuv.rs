@@ -6,18 +6,18 @@ const VUV_WIN_MUL: usize = 2;
 const VUV_F0_MAX: f32 = 1100.0;
 const VUV_HP_HZ: f32 = 40.0;
 const VUV_LAG_DECIM: usize = 8;
-pub fn vuv(wave: &[f32], in_file: &Path, sr: u32, hop: usize) -> Vec<f32> {
+pub fn vuv(wave: &[f32], in_file: &Path, sr: u32, hop: usize) -> (Vec<f32>, Vec<f32>) {
     let n_frames = (wave.len() + hop - 1) / hop;
     let stem = in_file.file_name().unwrap().to_string_lossy();
     let llsm_p = in_file.with_file_name(format!("{stem}.llsm"));
     let llsm_p = if llsm_p.exists() { llsm_p } else { in_file.with_extension("llsm") };
-    if let Some(uv) = read_llsm_vuv(&llsm_p, n_frames, hop, sr) {
-        return uv;
+    if let Some((uv, f0)) = read_llsm_vuv(&llsm_p, n_frames, hop, sr) {
+        return (uv, f0);
     }
     let frq_p = in_file.with_file_name(format!("{stem}.frq"));
     let frq_p = if frq_p.exists() { frq_p } else { in_file.with_extension("frq") };
     if let Some(f0) = load_frq_f0(&frq_p, n_frames) {
-        return f0.iter().map(|&f| if f > 0.0 { 0.0 } else { 1.0 }).collect();
+        return (f0.iter().map(|&f| if f > 0.0 { 0.0 } else { 1.0 }).collect(), f0);
     }
     let sr_f = sr as f32;
     let mut uv = vec![1.0f32; n_frames];
@@ -119,7 +119,7 @@ pub fn vuv(wave: &[f32], in_file: &Path, sr: u32, hop: usize) -> Vec<f32> {
         let next = if i + 1 == n_frames { smoothed[i] } else { smoothed[i + 1] };
         uv[i] = if smoothed[i] != prev && smoothed[i] != next { prev } else { smoothed[i] };
     }
-    uv
+    (uv, vec![0.0f32; n_frames])
 }
 #[cfg(test)]
 mod tests {
@@ -145,7 +145,7 @@ mod tests {
     #[test]
     fn test_voiced_vs_unvoiced_separation() {
         let wave = build_voiced_unvoiced();
-        let uv = vuv(&wave, Path::new(NO_ANALYSIS), SR, HOP);
+        let (uv, _) = vuv(&wave, Path::new(NO_ANALYSIS), SR, HOP);
         let half = uv.len() / 2;
         let voiced_first = uv[..half].iter().filter(|&&v| v < 0.5).count();
         let voiced_second = uv[half..].iter().filter(|&&v| v < 0.5).count();
@@ -165,7 +165,7 @@ mod tests {
             y = 0.95 * y + 0.05 * x;
             w[i] = 0.3 * y;
         }
-        let uv = vuv(&w, Path::new(NO_ANALYSIS), SR, HOP);
+        let (uv, _) = vuv(&w, Path::new(NO_ANALYSIS), SR, HOP);
         let voiced = uv.iter().filter(|&&v| v < 0.5).count();
         assert!(voiced as f32 / (uv.len() as f32) < 0.1, "aspirated low-pass noise should be unvoiced");
     }
@@ -180,7 +180,7 @@ mod tests {
             let noise = (rng >> 8) as f32 / ((1u32 << 24) as f32) - 0.5;
             w[i] = 0.25 * (2.0 * std::f32::consts::PI * 600.0 * t).sin() + 0.15 * noise;
         }
-        let uv = vuv(&w, Path::new(NO_ANALYSIS), SR, HOP);
+        let (uv, _) = vuv(&w, Path::new(NO_ANALYSIS), SR, HOP);
         let voiced = uv.iter().filter(|&&v| v < 0.5).count();
         println!("falsetto voiced ratio = {:.2}", voiced as f32 / uv.len() as f32);
         assert!(voiced as f32 / uv.len() as f32 > 0.85, "falsetto (harmonic + noise) should be voiced");
@@ -195,7 +195,7 @@ mod tests {
                 let t = i as f32 / SR as f32;
                 w[i] = 0.25 * (2.0 * std::f32::consts::PI * f0 * t).sin();
             }
-            let uv = vuv(&w, Path::new(NO_ANALYSIS), SR, HOP);
+            let (uv, _) = vuv(&w, Path::new(NO_ANALYSIS), SR, HOP);
             let voiced = uv.iter().filter(|&&v| v < 0.5).count();
             assert!(
                 voiced as f32 / uv.len() as f32 > 0.95,
@@ -209,7 +209,7 @@ mod tests {
                 let noise = (rng >> 8) as f32 / ((1u32 << 24) as f32) - 0.5;
                 wb[i] = 0.25 * (2.0 * std::f32::consts::PI * f0 * t).sin() + 0.10 * noise;
             }
-            let uv = vuv(&wb, Path::new(NO_ANALYSIS), SR, HOP);
+            let (uv, _) = vuv(&wb, Path::new(NO_ANALYSIS), SR, HOP);
             let voiced = uv.iter().filter(|&&v| v < 0.5).count();
             assert!(
                 voiced as f32 / uv.len() as f32 > 0.95,
@@ -229,7 +229,7 @@ mod tests {
             let noise = (rng >> 8) as f32 / ((1u32 << 24) as f32) - 0.5;
             w[i] = 0.25 * (2.0 * std::f32::consts::PI * 200.0 * t).sin() + 0.10 * noise;
         }
-        let uv = vuv(&w, Path::new(NO_ANALYSIS), SR, HOP);
+        let (uv, _) = vuv(&w, Path::new(NO_ANALYSIS), SR, HOP);
         let voiced = uv[..1000].iter().filter(|&&v| v < 0.5).count();
         assert!(voiced as f32 > 950.0, "breathy long vowel must stay voiced");
     }
@@ -244,7 +244,7 @@ mod tests {
             let noise = (rng >> 8) as f32 / ((1u32 << 24) as f32) - 0.5;
             w[i] = 0.15 * (2.0 * std::f32::consts::PI * 200.0 * t).sin() + 0.30 * noise;
         }
-        let uv = vuv(&w, Path::new(NO_ANALYSIS), SR, HOP);
+        let (uv, _) = vuv(&w, Path::new(NO_ANALYSIS), SR, HOP);
         let voiced = uv[..1000].iter().filter(|&&v| v < 0.5).count();
         assert_eq!(voiced, 0, "SNR -6 dB is below the detector's voicing floor");
     }

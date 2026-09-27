@@ -131,7 +131,7 @@ pub fn read_llsm_vuv(
     n_origin: usize,
     origin_hop: usize,
     sr: u32,
-) -> Option<Vec<f32>> {
+) -> Option<(Vec<f32>, Vec<f32>)> {
     let bytes = fs::read(path).ok()?;
     if bytes.len() < 5 || &bytes[0..5] != b"\x04data" {
         return None;
@@ -167,13 +167,15 @@ pub fn read_llsm_vuv(
     };
     let n_frames = frames.len() as f32;
     let mut uv = Vec::with_capacity(n_origin);
+    let mut f0 = Vec::with_capacity(n_origin);
     for j in 0..n_origin {
         let t = (j * origin_hop) as f32;
         let fi = ((t / hop_samples).floor()).min(n_frames - 1.0) as usize;
-        let f0 = frame_f0(&frames[fi]);
-        uv.push(if f0 > 0.0 { 0.0 } else { 1.0 });
+        let f = frame_f0(&frames[fi]);
+        f0.push(f);
+        uv.push(if f > 0.0 { 0.0 } else { 1.0 });
     }
-    Some(uv)
+    Some((uv, f0))
 }
 #[cfg(test)]
 mod tests {
@@ -240,22 +242,25 @@ mod tests {
         let p = dir.join("nhv_llsm_vuv_test.llsm");
         fs::write(&p, &bytes).unwrap();
         let n_origin = 16; 
-        let uv = read_llsm_vuv(&p, n_origin, 128, 44100).expect("read");
+        let (uv, f0) = read_llsm_vuv(&p, n_origin, 128, 44100).expect("read");
         assert_eq!(uv.len(), n_origin);
         assert_eq!(uv[0], 1.0);
         assert_eq!(uv[5], 1.0);
         assert_eq!(uv[6], 0.0);
         assert_eq!(uv[7], 0.0);
+        assert_eq!(f0.len(), n_origin);
+        assert_eq!(f0[0], 0.0);
+        assert!((f0[6] - 220.0).abs() < 1.0, "frame6 f0={}", f0[6]);
+        assert!((f0[7] - 330.0).abs() < 1.0, "frame7 f0={}", f0[7]);
         fs::remove_file(&p).ok();
     }
     #[test]
     fn read_llsm_vuv_missing_file_is_none() {
-        let uv = read_llsm_vuv(
+        assert!(read_llsm_vuv(
             Path::new("E:/does_not_exist_xyz/__no__.wav.llsm"),
             10,
             128,
             44100,
-        );
-        assert!(uv.is_none());
+        ).is_none());
     }
 }

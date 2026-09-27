@@ -72,7 +72,7 @@ impl CacheManager {
             create_dir_all(parent).unwrap();
         }
     }
-    pub fn load_features_cache(&self, path: &Path) -> Option<(Array2<f32>, f32, Vec<f32>)> {
+    pub fn load_features_cache(&self, path: &Path) -> Option<(Array2<f32>, f32, Vec<f32>, Vec<f32>)> {
         if !path.exists() {
             return None;
         }
@@ -87,7 +87,7 @@ impl CacheManager {
         let scale = f32::from_le_bytes(data[4..8].try_into().unwrap());
         let mel_bytes = 128 * cols * 2;
         let uv_bytes = (cols + 7) / 8;
-        let expected_len = 8 + mel_bytes + uv_bytes;
+        let expected_len = 8 + mel_bytes + uv_bytes + cols * 4;
         if data.len() != expected_len {
             warn!("Cache file size mismatch: expected {}, got {}", expected_len, data.len());
             return None;
@@ -96,23 +96,27 @@ impl CacheManager {
         for (m, chunk) in mel.iter_mut().zip(data[8..8+mel_bytes].chunks_exact(2)) {
             *m = MEL_MIN + u16::from_le_bytes(chunk.try_into().unwrap()) as f32 * MEL_DEQUANT_SCALE;
         }
-        let uv_compressed = &data[8+mel_bytes..];
+        let uv_compressed = &data[8+mel_bytes..8+mel_bytes+uv_bytes];
         let mut uv = Vec::with_capacity(cols);
         for i in 0..cols {
             let bit = (uv_compressed[i / 8] >> (i % 8)) & 1;
             uv.push(if bit != 0 { 1.0 } else { 0.0 });
         }
+        let mut f0 = Vec::with_capacity(cols);
+        for i in 0..cols {
+            f0.push(f32::from_le_bytes(data[8+mel_bytes+uv_bytes+i*4..8+mel_bytes+uv_bytes+(i+1)*4].try_into().unwrap()));
+        }
         info!("Cache loaded: {}", path.display());
-        Some((mel, scale, uv))
+        Some((mel, scale, uv, f0))
     }
-    pub fn save_features_cache(&self, path: &Path, mel: &Array2<f32>, scale: f32, uv: &[f32]) {
+    pub fn save_features_cache(&self, path: &Path, mel: &Array2<f32>, scale: f32, uv: &[f32], f0: &[f32]) {
         self.validate_file_path(path);
         self.lock_manager.acquire_exclusive(path, Duration::from_secs(5));
         defer! { self.lock_manager.release(path); }
         let cols = mel.ncols();
         let mel_bytes = 128 * cols * 2;
         let uv_bytes = (cols + 7) / 8;
-        let mut buf = Vec::with_capacity(8 + mel_bytes + uv_bytes);
+        let mut buf = Vec::with_capacity(8 + mel_bytes + uv_bytes + cols * 4);
         buf.extend_from_slice(&(cols as u32).to_le_bytes());
         buf.extend_from_slice(&scale.to_le_bytes());
         buf.extend(mel.iter().flat_map(|&x| {
@@ -126,6 +130,7 @@ impl CacheManager {
             }
         }
         buf.extend_from_slice(&uv_compressed);
+        buf.extend(f0.iter().flat_map(|&x| x.to_le_bytes()));
         let tmp_path = path.with_extension("tmp");
         fs::write(&tmp_path, &buf).unwrap();
         rename(&tmp_path, path).unwrap();

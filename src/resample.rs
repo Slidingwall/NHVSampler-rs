@@ -3,7 +3,7 @@ use ndarray::{Array2, Axis, azip, concatenate, s};
 use tracing::info;
 use crate::{
     audio::{post_process::{loudness_norm, pre_emphasis_base_tension}, read_audio, write_audio},
-    consts::{NHV_CONFIG, ORIGIN_HOP_SIZE, SAMPLE_RATE, MEL_BIN_CENTER_HZ},
+    consts::{NHV_CONFIG, ORIGIN_HOP_SIZE, SAMPLE_RATE, FORMANT_HR, MEL_BIN_CENTER_HZ},
     model::get_vocoder,
     server::Arguments,
     utils::{
@@ -19,7 +19,7 @@ use crate::{
 };
 const SR: f32 = SAMPLE_RATE as f32;
 const THOP_ORIGIN: f32 = ORIGIN_HOP_SIZE as f32 / SR;
-pub fn get_features(args: &Arguments, wave: &[f32]) -> (Array2<f32>, f32, Vec<f32>) {
+pub fn get_features(args: &Arguments, wave: &[f32]) -> (Array2<f32>, f32, Vec<f32>, Vec<f32>) {
     let gender = args.flags.get("g").and_then(|x| *x).unwrap_or(0.0);
     let fname = args.in_file.file_stem().unwrap().to_str().unwrap();
     let features_path = args.in_file.with_file_name(format!(
@@ -35,7 +35,7 @@ pub fn get_features(args: &Arguments, wave: &[f32]) -> (Array2<f32>, f32, Vec<f3
         }
     }
     info!("Generating features: {}", features_path.display());
-    let uv = vuv(wave, &args.in_file, SAMPLE_RATE, ORIGIN_HOP_SIZE);
+    let (uv, f0) = vuv(wave, &args.in_file, SAMPLE_RATE, ORIGIN_HOP_SIZE);
     let spec_mix = stft_core(wave);
     let (_, freq_bins, frames) = spec_mix.dim();
     let mut spec_amp = Array2::zeros((freq_bins, frames));
@@ -51,13 +51,13 @@ pub fn get_features(args: &Arguments, wave: &[f32]) -> (Array2<f32>, f32, Vec<f3
     info!("Gender adjustment: {}, Mel shape: {:?}", gender, mel.dim());
     info!("VUV estimated: {} voiced / {} frames",
           uv.iter().filter(|&&v| v < 0.5).count(), uv.len());
-    CACHE_MANAGER.save_features_cache(&features_path, &mel, scale, &uv);
-    (mel, scale, uv)
+    CACHE_MANAGER.save_features_cache(&features_path, &mel, scale, &uv, &f0);
+    (mel, scale, uv, f0)
 }
 pub fn resample(args: Arguments) -> Result<()> {
     let thop = *crate::consts::THOP;
     let wave = read_audio(&args.in_file)?;
-    let (mut mel_origin, scale, uv_origin) = get_features(&args, &wave);
+    let (mut mel_origin, scale, uv_origin, f0_origin) = get_features(&args, &wave);
     if args.out_file.as_os_str() == "nul" {
         info!("Null output file - skipping write");
         return Ok(());
@@ -145,36 +145,44 @@ pub fn resample(args: Arguments) -> Result<()> {
     let roughness = args.flags.get("HC").and_then(|x| *x).unwrap_or(0.0);
     let openness = args.flags.get("Ho").and_then(|x| *x).unwrap_or(0.0);
     if resonance != 0.0 || formant != 0.0 || roughness != 0.0 || openness != 0.0 {
+        let mf = if formant > 0.0 { 1.0 + 0.005 * formant } else { 1.0 + 0.0025 * formant };
         let res_ln: Vec<f32> = if resonance != 0.0 {
-            let r = (-std::f32::consts::PI * 1000.0 / SR).exp();
-            let r2 = r * r;
-            let c0 = (2.0 * std::f32::consts::PI * 3200.0 / SR).cos();
-            let den0 = (1.0 - r) * (1.0 - r);
             let neg = if resonance < 0.0 { 0.09900990099009901 } else { 1.0 };
-            (0..128).map(|b| {
-                let w = 2.0 * std::f32::consts::PI * MEL_BIN_CENTER_HZ[b] / SR;
-                let (sw, cw) = w.sin_cos();
-                let re = 1.0 - 2.0 * r * c0 * cw + r2 * (2.0 * cw * cw - 1.0);
-                let im = 2.0 * r * c0 * sw - r2 * 2.0 * sw * cw;
-                let den = re.hypot(im).max(1e-12);
-                (1.0 + 0.1 * resonance * (den0 / den) * neg).ln()
-            }).collect()
+            FORMANT_HR.iter().map(|&ratio| (1.0 + 0.1 * resonance * ratio * neg).ln()).collect()
         } else {
             Vec::new()
         };
         let open: Option<(f32, f32, f32, Vec<(f32, f32)>, f32)> = if openness != 0.0 {
             let r = (-std::f32::consts::PI * 300.0 / SR).exp();
             let r2 = r * r;
-            let k0 = 2.0 * (1.0 + r).ln();
+            let k0 = 2.0 * (1.0 - r).ln();
             let wtab: Vec<(f32, f32)> = MEL_BIN_CENTER_HZ.iter().map(|&hz| {
                 let w = 2.0 * std::f32::consts::PI * hz / SR;
                 w.sin_cos()
             }).collect();
-            Some((r, r2, k0, wtab, openness * std::f32::consts::LN_2 / 600.0))
+            Some((r, r2, k0, wtab, openness / 300.0))
         } else { None };
+        let f0_source_render: Vec<f32> = if openness != 0.0 {
+            let last_f0 = (f0_origin.len() - 1) as f32;
+            idx_stretched.iter().map(|&p| {
+                let p = p.clamp(0.0, last_f0);
+                let i0 = p.floor() as usize;
+                let f = p - i0 as f32;
+                let i1 = (i0 + 1).min(f0_origin.len() - 1);
+                f0_origin[i0] * (1.0 - f) + f0_origin[i1] * f
+            }).collect()
+        } else { Vec::new() };
         for t in 0..mel_render.nrows() {
             let mut row = mel_render.row_mut(t);
-            let c0f = (2.0 * std::f32::consts::PI * f0_render[t] / SR).cos();
+            if formant != 0.0 {
+                for b in 0usize..128 {
+                    row[b] *= mf;
+                }
+            }
+            let c0f = if open.is_some() {
+                let f0c = if f0_source_render[t] > 0.0 { f0_source_render[t] } else { f0_render[t] };
+                (2.0 * std::f32::consts::PI * f0c / SR).cos()
+            } else { 0.0 };
             for b in 0usize..128 {
                 if resonance != 0.0 {
                     row[b] += res_ln[b];
@@ -184,7 +192,7 @@ pub fn resample(args: Arguments) -> Result<()> {
                     let re = 1.0 - 2.0 * r * c0f * cw + r2 * (2.0 * cw * cw - 1.0);
                     let im = 2.0 * r * c0f * sw - r2 * 2.0 * sw * cw;
                     let d = re * re + im * im;
-                    row[b] *= (-a * (k0 - 0.5 * d.ln())).exp();
+                    row[b] += a * (0.5 * d.ln() - k0);
                 }
             }
             if roughness != 0.0 {
@@ -193,12 +201,6 @@ pub fn resample(args: Arguments) -> Result<()> {
                     let v = orig - 0.05 * roughness;
                     let floor = orig * roughness * 0.005 * std::f32::consts::LN_2;
                     row[b] = if v > floor { v } else { floor };
-                }
-            }
-            if formant != 0.0 {
-                let mf = if formant > 0.0 { 1.0 + 0.005 * formant } else { 1.0 + 0.0025 * formant };
-                for b in 0usize..128 {
-                    row[b] *= mf;
                 }
             }
         }
