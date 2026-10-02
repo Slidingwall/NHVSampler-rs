@@ -7,12 +7,10 @@ pub static IS_V3X: Lazy<bool> = Lazy::new(|| {
         .and_then(|n| n.to_str())
         .map(|s| s.to_ascii_lowercase())
         .unwrap_or_default();
-    if name.contains("v3x") {
+    if name.contains("x") {
         true
-    } else if name.contains("v3") {
-        false
     } else {
-        true
+        false
     }
 });
 pub static HOP_SIZE: Lazy<usize> = Lazy::new(|| if *IS_V3X { 512 } else { 256 });

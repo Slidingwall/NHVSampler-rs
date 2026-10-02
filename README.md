@@ -24,7 +24,7 @@ The client is as same as hifisampler. If you are using macOS or Linux, you can t
 
 You need the following ONNX models:  
 您需要以下 ONNX 模型：
-- [nhv_v3 or v3x](https://github.com/wavtechyukky/NHVSing/tree/main/exported_models/v3) (resampler will use the corresponding hop size.)
+- [latest nhv_v3 or v3x](https://github.com/wavtechyukky/NHVSing/tree/main/exported_models/v3_2_1) (resampler will use the corresponding hop size.)
 
 They should be located in the `./model/` folder within the same directory as the server-side, but you can also customize the model's location by modifying `nhvconfig.ini`.  
 它们应位于与服务器端同目录的`./model/`文件夹内，但您也可以通过修改`nhvconfig.ini`来自定义模型的位置。  
